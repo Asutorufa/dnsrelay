@@ -25,24 +25,16 @@ fn listener(host: &str, target_addr: &str) -> std::io::Result<()> {
 
     let target: SocketAddr = target_addr.parse().expect("parse target addr failed");
     loop {
-        let socket_clone = socket.try_clone().expect("msg");
-        match socket_clone.recv_from(&mut buf) {
-            Ok((amt, src)) => {
-                thread::spawn(move || {
-                    match handle(&mut buf[..amt], src, socket_clone, target) {
-                        Ok(_) => {}
-                        Err(e) => println!("{}", e),
-                    }
-                    println!("recv {} data from {}", amt, src);
-                });
+        let socket_clone = socket.try_clone().expect("clone self socket failed");
+        let (amt, src) = socket_clone.recv_from(&mut buf).expect("recv data failed");
+        thread::spawn(move || {
+            match handle(&mut buf[..amt], src, socket_clone, target) {
+                Ok(_) => {}
+                Err(e) => println!("{}", e),
             }
-            Err(e) => {
-                println!("{}", e);
-                break;
-            }
-        }
+            println!("recv {} data from {}", amt, src);
+        });
     }
-    Ok(())
 }
 
 fn handle(
@@ -54,14 +46,14 @@ fn handle(
     let client =
         UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("bind dns client socket failed");
 
-    client.set_write_timeout(Some(Duration::from_secs(20)))?;
+    client.set_write_timeout(Some(Duration::from_secs(10)))?;
 
     client
         .send_to(buf, target)
         .expect("send data to dns server failed");
 
     let mut buf = [0; 2048];
-    client.set_read_timeout(Some(Duration::from_secs(20)))?;
+    client.set_read_timeout(Some(Duration::from_secs(10)))?;
     let (amt, _) = client
         .recv_from(&mut buf)
         .expect("recv data from dns server failed");
