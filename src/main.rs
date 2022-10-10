@@ -2,31 +2,34 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::thread;
 use std::time::Duration;
 
-use clap::{Arg, Command};
-
 fn main() {
-    let matches = cli().get_matches();
-    let host = matches
-        .get_one::<String>("host")
-        .map(|s| s.as_str())
-        .unwrap();
-    let target = matches
-        .get_one::<String>("target")
-        .map(|s| s.as_str())
-        .unwrap();
+    let args: Vec<_> = std::env::args().collect();
+
+    let host_i = args
+        .iter()
+        .position(|r| r == "-host" || r == "-s" || r == "--host")
+        .expect("can't find host arguments");
+    let target_i = args
+        .iter()
+        .position(|r| r == "-target" || r == "-t" || r == "--target")
+        .expect("can't find target argument");
+
+    let host = args.get(host_i + 1).expect("get host failed");
+    let target = args.get(target_i + 1).expect("get target failed");
+
     println!("Hello, world!,{:?},{:?}", host, target);
     listener(host, target).unwrap();
 }
 
 fn listener(host: &str, target_addr: &str) -> std::io::Result<()> {
     let socket = UdpSocket::bind(host)?;
-
-    let mut buf = [0; 2048];
-
     let target: SocketAddr = target_addr.parse().expect("parse target addr failed");
+
     loop {
+        let mut buf = [0; 2048];
+        let (amt, src) = socket.recv_from(&mut buf).expect("recv data failed");
+
         let socket_clone = socket.try_clone().expect("clone self socket failed");
-        let (amt, src) = socket_clone.recv_from(&mut buf).expect("recv data failed");
         thread::spawn(move || {
             match handle(&mut buf[..amt], src, socket_clone, target) {
                 Ok(_) => {}
@@ -62,12 +65,4 @@ fn handle(
         .send_to(&mut buf[..amt], src)
         .expect("send relay data to client");
     Ok(())
-}
-
-fn cli() -> Command {
-    Command::new("dnsrelay")
-        .arg_required_else_help(true)
-        .allow_external_subcommands(true)
-        .arg(Arg::new("host").short('s').long("host"))
-        .arg(Arg::new("target").short('t').long("target"))
 }
