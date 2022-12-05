@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use dnsrelay::netlink;
+use netlink_packet_sock_diag::constants::*;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -31,11 +34,14 @@ fn listener(host: &str, target_addr: &str) -> std::io::Result<()> {
 
         let socket_clone = socket.try_clone().expect("clone self socket failed");
         thread::spawn(move || {
+            match netlink::dump_process(IPPROTO_UDP, src.ip(), src.port()) {
+                Ok(process) => println!("recv {} data from {},{}", amt, src, process),
+                Err(e) => println!("dump process failed: {}", e),
+            };
             match handle(&mut buf[..amt], src, socket_clone, target) {
                 Ok(_) => {}
                 Err(e) => println!("{}", e),
             }
-            println!("recv {} data from {}", amt, src);
         });
     }
 }
@@ -65,4 +71,34 @@ fn handle(
         .send_to(&mut buf[..amt], src)
         .expect("send relay data to client");
     Ok(())
+}
+
+fn listenerTCP(host: &str, target: &str) -> std::io::Result<()> {
+    let r = TcpListener::bind(host)?;
+    let target_addr: SocketAddr = target.parse().unwrap();
+    loop {
+        let (conn, addr) = r.accept().expect("accept failed");
+        println!("new connection from {}", addr);
+        thread::spawn(move || {
+            let t = TcpStream::connect(target_addr).expect("connect to target failed");
+            handle_conn(conn, t);
+        });
+    }
+}
+
+fn handle_conn(lhs_stream: TcpStream, rhs_stream: TcpStream) {
+    let lhs_arc = Arc::new(lhs_stream);
+    let rhs_arc = Arc::new(rhs_stream);
+
+    let (mut lhs_tx, mut lhs_rx) = (lhs_arc.try_clone().unwrap(), lhs_arc.try_clone().unwrap());
+    let (mut rhs_tx, mut rhs_rx) = (rhs_arc.try_clone().unwrap(), rhs_arc.try_clone().unwrap());
+
+    let connections = vec![
+        thread::spawn(move || std::io::copy(&mut lhs_tx, &mut rhs_rx).unwrap()),
+        thread::spawn(move || std::io::copy(&mut rhs_tx, &mut lhs_rx).unwrap()),
+    ];
+
+    for t in connections {
+        t.join().unwrap();
+    }
 }
