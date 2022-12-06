@@ -9,6 +9,7 @@ edition = "2021"
 netlink-packet = "0.1.1"
 netlink-packet-sock-diag = "0.4.0"
 netlink-sys = "0.8.3"
+dns-parser = "0.8.0"
 
 [profile.release]
 lto = true

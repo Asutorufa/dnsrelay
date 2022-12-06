@@ -1,3 +1,4 @@
+use dns_parser::Packet;
 use dnsrelay::netlink;
 use netlink_packet_sock_diag::constants::*;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
@@ -8,39 +9,56 @@ use std::time::Duration;
 fn main() {
     let args: Vec<_> = std::env::args().collect();
 
-    let host_i = args
-        .iter()
-        .position(|r| r == "-host" || r == "-s" || r == "--host")
-        .expect("can't find host arguments");
-    let target_i = args
-        .iter()
-        .position(|r| r == "-target" || r == "-t" || r == "--target")
-        .expect("can't find target argument");
+    let check_arg = |r: &str, b: &str| -> bool {
+        return r == format!("-{}", b)
+            || r == format!("--{}", b)
+            || r == format!("-{}", b.chars().nth(0).unwrap());
+    };
 
-    let host = args.get(host_i + 1).expect("get host failed");
-    let target = args.get(target_i + 1).expect("get target failed");
+    let host = args
+        .get(args.iter().position(|r| check_arg(r, "host")).unwrap() + 1)
+        .unwrap();
+    let target = args
+        .get(args.iter().position(|r| check_arg(r, "target")).unwrap() + 1)
+        .unwrap();
 
-    println!("Hello, world!,{:?},{:?}", host, target);
+    println!("listen at {:?}, relay to {:?}", host, target);
     listener(host, target).unwrap();
 }
 
-fn listener(host: &str, target_addr: &str) -> std::io::Result<()> {
+fn listener(host: &str, target_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let socket = UdpSocket::bind(host)?;
-    let target: SocketAddr = target_addr.parse().expect("parse target addr failed");
+    let target: SocketAddr = target_addr.parse()?;
 
     loop {
         let mut buf = [0; 2048];
-        let (amt, src) = socket.recv_from(&mut buf).expect("recv data failed");
+        let (amt, src) = socket.recv_from(&mut buf)?;
 
-        let socket_clone = socket.try_clone().expect("clone self socket failed");
+        let socket_clone = socket.try_clone()?;
         thread::spawn(move || {
-            match netlink::dump_process(IPPROTO_UDP, src.ip(), src.port()) {
-                Ok(process) => println!("recv {} data from {},{}", amt, src, process),
-                Err(e) => println!("dump process failed: {}", e),
+            let process =
+                netlink::dump_process(IPPROTO_UDP, src).unwrap_or("dump_process err".to_owned());
+
+            let (qname, qtype) = match Packet::parse(&buf[..amt]) {
+                Ok(v) => {
+                    if v.questions.len() == 1 {
+                        (String::from(""), dns_parser::QueryType::All);
+                    }
+                    (v.questions[0].qname.to_string(), v.questions[0].qtype)
+                }
+                Err(e) => {
+                    println!("parse dns request failed: {}", e);
+                    (String::from(""), dns_parser::QueryType::All)
+                }
             };
-            match handle(&mut buf[..amt], src, socket_clone, target) {
-                Ok(_) => {}
-                Err(e) => println!("{}", e),
+
+            println!(
+                "recv {} data to resolve {}({:?}) from {}({})",
+                amt, qname, qtype, src, process
+            );
+
+            if let Err(e) = handle(&mut buf[..amt], src, socket_clone, target) {
+                println!("relay to failed: {}", e);
             }
         });
     }
@@ -51,37 +69,31 @@ fn handle(
     src: SocketAddr,
     socket: UdpSocket,
     target: SocketAddr,
-) -> std::io::Result<()> {
-    let client =
-        UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("bind dns client socket failed");
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
 
     client.set_write_timeout(Some(Duration::from_secs(10)))?;
 
-    client
-        .send_to(buf, target)
-        .expect("send data to dns server failed");
+    client.send_to(buf, target)?;
 
     let mut buf = [0; 2048];
     client.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let (amt, _) = client
-        .recv_from(&mut buf)
-        .expect("recv data from dns server failed");
+    let (amt, _) = client.recv_from(&mut buf)?;
 
-    socket
-        .send_to(&mut buf[..amt], src)
-        .expect("send relay data to client");
+    socket.send_to(&mut buf[..amt], src)?;
     Ok(())
 }
 
-fn listenerTCP(host: &str, target: &str) -> std::io::Result<()> {
+fn listener_tcp(host: &str, target: &str) -> Result<(), Box<dyn std::error::Error>> {
     let r = TcpListener::bind(host)?;
-    let target_addr: SocketAddr = target.parse().unwrap();
+    let target_addr: SocketAddr = target.parse()?;
     loop {
-        let (conn, addr) = r.accept().expect("accept failed");
+        let (conn, addr) = r.accept()?;
         println!("new connection from {}", addr);
         thread::spawn(move || {
-            let t = TcpStream::connect(target_addr).expect("connect to target failed");
-            handle_conn(conn, t);
+            if let Ok(t) = TcpStream::connect(target_addr) {
+                handle_conn(conn, t);
+            }
         });
     }
 }
